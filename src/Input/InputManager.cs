@@ -32,8 +32,26 @@ namespace UniverseLib.Input
 
         private static void InitHandler()
         {
-            // First, just try to use the legacy input, see if its working.
-            // The InputSystem package may be present but not actually activated, so we can find out this way.
+            // Try the new InputSystem first. If the game uses the new InputSystem and legacy input is
+            // stripped, calling legacy Input methods (e.g. InputBindings::GetKeyDownInt) will cause a
+            // native crash that can't be caught. The new InputSystem is always safe to probe via reflection.
+
+            if (InputSystem.TKeyboard != null)
+            {
+                try
+                {
+                    inputHandler = new InputSystem();
+                    CurrentType = InputType.InputSystem;
+                    Universe.Log("Initialized new InputSystem support.");
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    Universe.Log(ex);
+                }
+            }
+
+            // Fall back to legacy input if the new InputSystem is not available.
 
             // With BepInEx Il2CppInterop, for some reason InputLegacyModule may be loaded but our ReflectionUtility doesn't cache it?
             // No idea why or what is happening but this solves it for now.
@@ -46,7 +64,7 @@ namespace UniverseLib.Input
                         ReflectionUtility.CacheTypes(asm);
                         break;
                     }
-                } 
+                }
             }
 
             if (LegacyInput.TInput != null)
@@ -62,24 +80,9 @@ namespace UniverseLib.Input
                     Universe.Log("Initialized Legacy Input support");
                     return;
                 }
-                catch 
+                catch
                 {
-                    // It's not working, we'll fall back to InputSystem.
-                }
-            }
-
-            if (InputSystem.TKeyboard != null)
-            {
-                try
-                {
-                    inputHandler = new InputSystem();
-                    CurrentType = InputType.InputSystem;
-                    Universe.Log("Initialized new InputSystem support.");
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    Universe.Log(ex);
+                    // It's not working, we'll fall back to NoInput.
                 }
             }
 
