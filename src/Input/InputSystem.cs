@@ -53,36 +53,84 @@ public class InputSystem : IHandleInput
     static object? CurrentMouse => p_mouseCurrent?.GetValue(null, null);
     static PropertyInfo? p_mouseCurrent;
 
+    // NB all Mouse.current member accesses must guard against CurrentMouse being null
+    // (no mouse device, e.g. touch-only handhelds) - GetValue(null) on an instance
+    // property throws TargetException.
+
     // Mouse.current.leftButton
-    static object? LeftMouseButton => p_leftButton?.GetValue(CurrentMouse, null);
+    static object? LeftMouseButton => CurrentMouse is null ? null : p_leftButton?.GetValue(CurrentMouse, null);
     static PropertyInfo? p_leftButton;
 
     // Mouse.current.rightButton
-    static object? RightMouseButton => p_rightButton?.GetValue(CurrentMouse, null);
+    static object? RightMouseButton => CurrentMouse is null ? null : p_rightButton?.GetValue(CurrentMouse, null);
     static PropertyInfo? p_rightButton;
 
     // Mouse.current.middleButton
-    static object? MiddleMouseButton => p_middleButton?.GetValue(CurrentMouse, null);
+    static object? MiddleMouseButton => CurrentMouse is null ? null : p_middleButton?.GetValue(CurrentMouse, null);
     static PropertyInfo? p_middleButton;
 
     // Mouse.current.forwardButton
-    static object? ForwardMouseButton => p_forwardButton?.GetValue(CurrentMouse, null);
+    static object? ForwardMouseButton => CurrentMouse is null ? null : p_forwardButton?.GetValue(CurrentMouse, null);
     static PropertyInfo? p_forwardButton;
 
     // Mouse.current.backButton
-    static object? BackMouseButton => p_backButton?.GetValue(CurrentMouse, null);
+    static object? BackMouseButton => CurrentMouse is null ? null : p_backButton?.GetValue(CurrentMouse, null);
     static PropertyInfo? p_backButton;
 
     // InputSystem.InputControl<Vector2>.ReadValue()
     static MethodInfo? m_ReadV2Control;
 
     // Mouse.current.position
-    static object? MousePositionInfo => p_position?.GetValue(CurrentMouse, null);
+    static object? MousePositionInfo => CurrentMouse is null ? null : p_position?.GetValue(CurrentMouse, null);
     static PropertyInfo? p_position;
 
     // Mouse.current.scroll
-    static object? MouseScrollInfo => p_scrollDelta?.GetValue(CurrentMouse, null);
+    static object? MouseScrollInfo => CurrentMouse is null ? null : p_scrollDelta?.GetValue(CurrentMouse, null);
     static PropertyInfo? p_scrollDelta;
+
+    // Touch fallback for devices with no mouse (phones, handhelds): the primary
+    // touch answers the same polls a mouse would (position + button 0).
+
+    // typeof(InputSystem.Touchscreen)
+    public static Type TTouchscreen => t_Touchscreen ??= ReflectionUtility.GetTypeByName("UnityEngine.InputSystem.Touchscreen");
+    static Type? t_Touchscreen;
+
+    // Touchscreen.current
+    static object? CurrentTouchscreen => p_touchCurrent?.GetValue(null, null);
+    static PropertyInfo? p_touchCurrent;
+
+    // Touchscreen.current.primaryTouch
+    static object? PrimaryTouch
+    {
+        get
+        {
+            object? touchscreen = CurrentTouchscreen;
+            return touchscreen is null ? null : p_primaryTouch?.GetValue(touchscreen, null);
+        }
+    }
+    static PropertyInfo? p_primaryTouch;
+
+    // Touchscreen.current.primaryTouch.press (a ButtonControl, so p_btn* work on it)
+    static object? PrimaryTouchPress
+    {
+        get
+        {
+            object? touch = PrimaryTouch;
+            return touch is null ? null : p_touchPress?.GetValue(touch, null);
+        }
+    }
+    static PropertyInfo? p_touchPress;
+
+    // Touchscreen.current.primaryTouch.position
+    static object? PrimaryTouchPositionInfo
+    {
+        get
+        {
+            object? touch = PrimaryTouch;
+            return touch is null ? null : p_touchPosition?.GetValue(touch, null);
+        }
+    }
+    static PropertyInfo? p_touchPosition;
 
     // typeof(InputSystem.UI.InputSystemUIInputModule)
     public Type TInputSystemUIInputModule => t_UIInputModule
@@ -123,6 +171,15 @@ public class InputSystem : IHandleInput
 
         p_position = ReflectionUtility.GetTypeByName("UnityEngine.InputSystem.Pointer")
                        .GetProperty("position");
+
+        if (TTouchscreen is not null)
+        {
+            p_touchCurrent = TTouchscreen.GetProperty("current");
+            p_primaryTouch = TTouchscreen.GetProperty("primaryTouch");
+            Type? t_touchControl = ReflectionUtility.GetTypeByName("UnityEngine.InputSystem.Controls.TouchControl");
+            p_touchPress = t_touchControl?.GetProperty("press");
+            p_touchPosition = t_touchControl?.GetProperty("position");
+        }
 
         m_ReadV2Control = ReflectionUtility.GetTypeByName("UnityEngine.InputSystem.InputControl`1")
                                   .MakeGenericType(typeof(Vector2))
@@ -183,11 +240,12 @@ public class InputSystem : IHandleInput
     {
         get
         {
-            if (m_ReadV2Control is null)
+            object? positionInfo = MousePositionInfo ?? PrimaryTouchPositionInfo;
+            if (m_ReadV2Control is null || positionInfo is null)
             {
                 return default;
             }
-            object? mousePos = m_ReadV2Control.Invoke(MousePositionInfo, ArgumentUtility.EmptyArgs);
+            object? mousePos = m_ReadV2Control.Invoke(positionInfo, ArgumentUtility.EmptyArgs);
             return mousePos is Vector2 vector ? vector : default;
         }
     }
@@ -196,18 +254,20 @@ public class InputSystem : IHandleInput
     {
         get
         {
-            if (m_ReadV2Control is null)
+            object? scrollInfo = MouseScrollInfo;
+            if (m_ReadV2Control is null || scrollInfo is null)
             {
                 return default;
             }
-            object? scrollDelta = m_ReadV2Control.Invoke(MouseScrollInfo, ArgumentUtility.EmptyArgs);
+            object? scrollDelta = m_ReadV2Control.Invoke(scrollInfo, ArgumentUtility.EmptyArgs);
             return scrollDelta is Vector2 vector ? vector : default;
         }
     }
 
     static object? GetMouseButtonObject(int btn) => btn switch
     {
-        0 => LeftMouseButton,
+        // No mouse: the primary touch acts as the left button.
+        0 => LeftMouseButton ?? PrimaryTouchPress,
         1 => RightMouseButton,
         2 => MiddleMouseButton,
         3 => BackMouseButton,
@@ -217,31 +277,34 @@ public class InputSystem : IHandleInput
 
     public bool GetMouseButtonDown(int btn)
     {
-        if (p_btnWasPressed is null)
+        object? button = GetMouseButtonObject(btn);
+        if (p_btnWasPressed is null || button is null)
         {
             return false;
         }
-        object? pressed = p_btnWasPressed.GetValue(GetMouseButtonObject(btn), null);
+        object? pressed = p_btnWasPressed.GetValue(button, null);
         return pressed is bool b && b;
     }
 
     public bool GetMouseButton(int btn)
     {
-        if (p_btnIsPressed is null)
+        object? button = GetMouseButtonObject(btn);
+        if (p_btnIsPressed is null || button is null)
         {
             return false;
         }
-        object? pressed = p_btnIsPressed.GetValue(GetMouseButtonObject(btn), null);
+        object? pressed = p_btnIsPressed.GetValue(button, null);
         return pressed is bool b && b;
     }
 
     public bool GetMouseButtonUp(int btn)
     {
-        if (p_btnWasReleased is null)
+        object? button = GetMouseButtonObject(btn);
+        if (p_btnWasReleased is null || button is null)
         {
             return false;
         }
-        object? released = p_btnWasReleased.GetValue(GetMouseButtonObject(btn), null);
+        object? released = p_btnWasReleased.GetValue(button, null);
         return released is bool b && b;
     }
 
@@ -263,6 +326,10 @@ public class InputSystem : IHandleInput
 
     public static object? KeyCodeToActualKey(KeyCode key)
     {
+        // No keyboard device connected - don't cache, one may appear later.
+        if (CurrentKeyboard is null)
+            return null;
+
         if (!KeyCodeToKeyDict.ContainsKey(key))
         {
             object? parsed = KeyCodeToKeyEnum(key);
@@ -305,7 +372,7 @@ public class InputSystem : IHandleInput
     public bool GetKeyDown(KeyCode key)
     {
         object? actual = KeyCodeToActualKey(key);
-        if (p_btnWasPressed is null)
+        if (p_btnWasPressed is null || actual is null)
         {
             return false;
         }
@@ -316,7 +383,7 @@ public class InputSystem : IHandleInput
     public bool GetKey(KeyCode key)
     {
         object? actual = KeyCodeToActualKey(key);
-        if (p_btnIsPressed is null)
+        if (p_btnIsPressed is null || actual is null)
         {
             return false;
         }
@@ -327,7 +394,7 @@ public class InputSystem : IHandleInput
     public bool GetKeyUp(KeyCode key)
     {
         object? actual = KeyCodeToActualKey(key);
-        if (p_btnWasReleased is null)
+        if (p_btnWasReleased is null || actual is null)
         {
             return false;
         }
@@ -351,36 +418,69 @@ public class InputSystem : IHandleInput
             return;
         }
 
-        Type assetType = ReflectionUtility.GetTypeByName("UnityEngine.InputSystem.InputActionAsset");
         newInputModule = RuntimeHelper.AddComponent<BaseInputModule>(UniversalUI.CanvasRoot, TInputSystemUIInputModule);
-        object asset = RuntimeHelper.CreateScriptable(assetType).TryCast(assetType);
+        p_actionsAsset = TInputSystemUIInputModule.GetProperty("actionsAsset");
 
         t_InputExtensions = ReflectionUtility.GetTypeByName("UnityEngine.InputSystem.InputActionSetupExtensions");
-
-        MethodInfo? addMap = t_InputExtensions.GetMethod("AddActionMap", [ assetType, typeof(string) ]);
-        if (addMap is null)
+        if (t_InputExtensions is not null)
         {
-            Universe.LogWarning("Unable to add ActionMap, Input will not work!");
-            return;
+            Type assetType = ReflectionUtility.GetTypeByName("UnityEngine.InputSystem.InputActionAsset");
+            object asset = RuntimeHelper.CreateScriptable(assetType).TryCast(assetType);
+
+            MethodInfo? addMap = t_InputExtensions.GetMethod("AddActionMap", [ assetType, typeof(string) ]);
+            if (addMap is null)
+            {
+                Universe.LogWarning("Unable to add ActionMap, Input will not work!");
+                return;
+            }
+            object map = addMap.Invoke(null, [ asset, "UI" ])
+                .TryCast(ReflectionUtility.GetTypeByName("UnityEngine.InputSystem.InputActionMap"));
+
+            CreateAction(map, "point", [ "<Mouse>/position" ], "point");
+            CreateAction(map, "click", [ "<Mouse>/leftButton" ], "leftClick");
+            CreateAction(map, "rightClick", [ "<Mouse>/rightButton" ], "rightClick");
+            CreateAction(map, "scrollWheel", [ "<Mouse>/scroll" ], "scrollWheel");
+
+            m_UI_Enable = map.GetType().GetMethod("Enable");
+            if (m_UI_Enable is null)
+            {
+                Universe.LogWarning("Unable to Enable ActionMap, Input will not work!");
+                return;
+            }
+            m_UI_Enable.Invoke(map, ArgumentUtility.EmptyArgs);
+            UIActionMap = map;
         }
-        object map = addMap.Invoke(null, [ asset, "UI" ])
-            .TryCast(ReflectionUtility.GetTypeByName("UnityEngine.InputSystem.InputActionMap"));
-
-        CreateAction(map, "point", [ "<Mouse>/position" ], "point");
-        CreateAction(map, "click", [ "<Mouse>/leftButton" ], "leftClick");
-        CreateAction(map, "rightClick", [ "<Mouse>/rightButton" ], "rightClick");
-        CreateAction(map, "scrollWheel", [ "<Mouse>/scroll" ], "scrollWheel");
-
-        m_UI_Enable = map.GetType().GetMethod("Enable");
-        if (m_UI_Enable is null)
+        else
         {
-            Universe.LogWarning("Unable to Enable ActionMap, Input will not work!");
-            return;
-        }
-        m_UI_Enable.Invoke(map, ArgumentUtility.EmptyArgs);
-        UIActionMap = map;
+            // Some il2cpp games strip InputActionSetupExtensions entirely, so the UI action
+            // map cannot be built by hand. The module's own AssignDefaultActions() survives
+            // (it backs the serialized default asset) and assigns the same point/click/scroll
+            // actions from DefaultInputActions, including touchscreen and gamepad bindings.
+            MethodInfo? assignDefaults = TInputSystemUIInputModule.GetMethod("AssignDefaultActions");
+            if (assignDefaults is null)
+            {
+                Universe.LogWarning("InputActionSetupExtensions is stripped and AssignDefaultActions was not found, Input will not work!");
+                return;
+            }
 
-        p_actionsAsset = TInputSystemUIInputModule.GetProperty("actionsAsset");
+            try
+            {
+                object module = newInputModule.TryCast(TInputSystemUIInputModule);
+                assignDefaults.Invoke(module, ArgumentUtility.EmptyArgs);
+
+                object? asset = p_actionsAsset?.GetValue(module, null);
+                UIActionMap = asset?.GetType().GetMethod("FindActionMap", [ typeof(string), typeof(bool) ])?
+                    .Invoke(asset, [ "UI", false ]);
+                m_UI_Enable = UIActionMap?.GetType().GetMethod("Enable");
+                m_UI_Enable?.Invoke(UIActionMap, ArgumentUtility.EmptyArgs);
+
+                Universe.Log("InputActionSetupExtensions is stripped, assigned default UI input actions instead.");
+            }
+            catch (Exception ex)
+            {
+                Universe.LogWarning($"Exception assigning default UI input actions, Input will not work! {ex}");
+            }
+        }
     }
 
     private void CreateAction(object map, string actionName, string[] bindings, string propertyName)

@@ -176,6 +176,36 @@ public static class UniversalUI
 
     internal static AssetBundle UIBundle;
 
+    // When the bundled font can't load (e.g. the prebuilt AssetBundle targets a
+    // different platform — desktop bundle on Android/IL2CPP), fall back to a real
+    // font. Built-in Arial.ttf is stripped from IL2CPP/mobile builds, so a
+    // dynamic OS font is the reliable choice; without this, UI text has no font
+    // and renders invisibly.
+    private static Font GetFallbackFont()
+    {
+        Font font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+        if (font != null)
+            return font;
+
+        Universe.LogWarning("Built-in Arial unavailable (stripped build) — creating a dynamic OS font for UI text.");
+        font = Font.CreateDynamicFontFromOSFont("Arial", 13);
+        if (font != null)
+            return font;
+
+        // Last resort: reuse any Font the game itself has already loaded.
+        foreach (Font f in Resources.FindObjectsOfTypeAll<Font>())
+        {
+            if (f != null)
+            {
+                Universe.Log($"Using existing game font '{f.name}' as UI fallback.");
+                return f;
+            }
+        }
+
+        Universe.LogWarning("No usable Font found — UI text will not render!");
+        return null;
+    }
+
     private static void LoadBundle()
     {
         SetupAssetBundlePatches();
@@ -210,7 +240,7 @@ public static class UniversalUI
             if (!TryLoadBundle(bundle))
             {
                 Universe.LogWarning($"Could not load UniverseLib UI {bundle} Bundle!");
-                DefaultFont = ConsoleFont = Resources.GetBuiltinResource<Font>("Arial.ttf");
+                DefaultFont = ConsoleFont = GetFallbackFont();
                 return;
             }
         }
@@ -223,7 +253,7 @@ public static class UniversalUI
         if (UIBundle == null)
         {
             Universe.LogWarning("Could not load the UniverseLib UI Bundle!");
-            DefaultFont = ConsoleFont = Resources.GetBuiltinResource<Font>("Arial.ttf");
+            DefaultFont = ConsoleFont = GetFallbackFont();
             return;
         }
 
